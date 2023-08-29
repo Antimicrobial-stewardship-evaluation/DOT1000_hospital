@@ -1,0 +1,861 @@
+---
+title: "30HN - DOT1000 trong bệnh viện"
+runtime: shiny
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: scroll
+    # social: menu
+    theme:
+      bg: "#FDF7F7" 
+      fg: "#101010"
+      primary: "#056117"
+      base_font: !expr bslib::font_google("Prompt")
+      code_font: !expr bslib::font_google("JetBrains Mono")
+
+---
+
+```{r setup, include = F}
+### inscrease the max size input
+options(shiny.maxRequestSize=480*1024^2)
+### required library and built-in functions
+library(dplyr)
+library(flexdashboard)
+library(plotly)
+library(shiny)
+library(tictoc)
+library(DT)
+library(stringr)
+library(readxl)
+library(tidyr)
+library(Polychrome)
+# library(shiny.i18n)
+### built-in functions
+# function to change to colnames
+source("Scripts/colname_match.R")
+# function to read multiple files with different format 
+source("Scripts/multiple_read.R")
+# function to clean the data for both bed, drug and patient dataset
+source("Scripts/clean_data.R")
+# function to calculate the bed day 
+source("Scripts/monthly_bedday_v2.R")
+### reactive functions 
+# multuple reading files
+# reactive upload patient data 
+react_upload_patient <- reactive({
+  # require input 
+  req(input$patient_upload)
+  # read multiple datasets 
+  multiple_read(input$patient_upload$datapath)
+  })
+# reactive upload drug data 
+react_upload_drug <- reactive({
+  # require input 
+  req(input$drug_upload)
+  # read multiple datasets 
+  multiple_read(input$drug_upload$datapath)
+  })
+# reactive upload bed data 
+react_upload_bed <- reactive({
+  # require inoput 
+  req(input$bed_upload)
+  # read multiple datasets
+  multiple_read(input$bed_upload$datapath)
+  })
+```
+
+
+Làm sạch dữ liệu
+=======================================================================
+
+```{r}
+###### UI for input ######
+# pageWithSidebar(
+fluidPage(
+  headerPanel(h2("Tải dữ liệu lên", align = "center")),
+  # sidebarPanel(
+  fluidRow(
+    column(
+      ### hospital selection 
+      selectInput("hospital", label = h3("Chọn Bệnh Viện"), choices = c("BVDK Nam Dinh"="Nam Dinh hospital", "BVDK Nghia Hung"="Nghia Hung hospital", "BVDK Xuan Truong"="Xuan Truong hospital", "BVDK Hai Hau"="Hai Hau hospital")),
+      width = 12, align = "center"
+    )
+  ),
+  # mainPanel(
+    fluidRow(
+    ### upload file 
+    column(4,
+           # patient 
+           fileInput(inputId = "patient_upload",label = h3("dữ liệu hành chính"),accept = c(".csv",".Rds",".xlsx",".xls",".xlsm",".rds"),multiple = TRUE)),
+    column(4,
+           # drug
+           fileInput(inputId = "drug_upload",label = h3("dữ liệu thuốc"),accept = c(".csv",".Rds",".xlsx",".xls",".xlsm",".rds"),multiple = TRUE)),
+    column(4,
+           # bed 
+           fileInput(inputId = "bed_upload",label = h3("dữ liệu giường"),accept = c(".csv",".Rds",".xlsx",".xls",".xlsm",".rds"),multiple = TRUE)
+    # )
+    )
+    ### button to start run the process
+    # actionButton("do", "bắt đầu chạy")
+    
+  )
+)
+```
+
+
+```{r}
+##### upload the clean the data set #####
+### clean the patient dataset ###
+patient_dat <- reactive({
+  #### required data to run
+  req(input$patient_upload)
+  # counting the time to upload  
+  tic()
+  # print the message 
+  print("begin to upload the patient data")
+  # get the data 
+  admin <- react_upload_patient() %>% as.data.frame()
+  # stop time counting
+  toc()
+  ### cleaning the data 
+  admin_cleaned <- clean_data(admin, type = "patient")
+  ### output the data
+  return(admin_cleaned)
+})
+### clean the drug dataset ###
+drug_dat <- reactive({
+  # required data to run
+  req(input$drug_upload)
+  # counting the time to upload  
+  tic()
+  # print the message 
+  print("begin to upload the drug data")
+  # get the data 
+  drug <- react_upload_drug() %>% as.data.frame()
+  # stop time counting
+  toc()
+  ### cleaning the data 
+  drug_cleaned<- clean_data(input = drug, type = "drug")
+  ### output the data
+  return(drug_cleaned)
+})
+### clean the bed dataset ###
+bed_dat <- reactive({
+   # required data to run
+  req(input$bed_upload)
+  # counting the time to upload  
+  tic()
+  # print the message 
+  print("begin to upload the bed data")
+  # get the data 
+  bed <- react_upload_bed() %>% as.data.frame()
+  # stop time counting
+  toc()
+  ### cleaning the data 
+  bed_cleaned<- clean_data(input = bed, type = "bed")
+  ### return the dataset
+  return(bed_cleaned)
+})
+### bed day calculate
+bed_day <- reactive({
+  ### require data to run
+  req(input$bed_upload)
+  ### get the bed data 
+  bed <- bed_dat() %>% as.data.frame()
+  ### calculate the bed day monthly
+  # print the message 
+  print("start calculating bed day")
+  tic()
+  # calculate the bed day monthly
+  bed_day <- monthly_bedday(bed)
+  ### return the output 
+  return(bed_day)
+  
+})
+
+### classifying the drug 
+classified_drug <- reactive({
+  ### require data to run
+  req(input$drug_upload)
+  ### drug data 
+  drug <- drug_dat()
+  tic("start importing and modifying the drug classification data")
+  # read drug classification data
+  drug_classify <- readRDS("Data/drug_classification_30HN_2021.rds")
+  # read ICD10 database 
+  ICD10 <- read_excel("Data/30HN_ICD10_dictionary_2021-08-31.xlsx")
+  # aware classification 
+  aware <- readRDS("Data/aware_druglist_2022-11-10.rds")
+  # create ICD10 variable then join with the ICD10 dictionary
+  drug <- drug %>% mutate(icd10 = str_sub(ma_benh,1,3)) %>% left_join(.,ICD10 %>% select(ICD10,Chapter,Chapter_name), by = c("icd10" = "ICD10")) %>% mutate(Chapter = replace_na(Chapter,"Unclassified"))
+  # fix the data base 
+  drug_classify <- drug_classify %>%
+    mutate(duong_dung=stri_trans_general(duong_dung, id = "Latin-ASCII"),
+           ten_thuoc=stri_trans_general(ten_thuoc, id = "Latin-ASCII")) %>%
+    mutate(duong_dung=casefold(duong_dung, upper = FALSE),
+           ten_thuoc=casefold(ten_thuoc, upper = FALSE))%>%
+    mutate(ab_used = ifelse(subgr_therapeutic_code %in% ("J01") | 
+                                       atc_code %in% "P01AB01", T, F)) %>% left_join(.,aware %>% select(Class,`ATC code`,Category), by = c("atc_code" = "ATC code"))
+  # print briefly the drug classification
+  print("a view of drug classification database")
+  print(head(drug_classify))
+  # get antibiotic only 
+  ab <- drug_classify %>%
+    filter(ab_used == T)
+  print("result of antibiotic classification")
+  print(head(ab))
+  # modify drug database 
+  drug <- drug %>%
+      mutate(ten_thuoc=stri_trans_general(ten_thuoc, id = "Latin-ASCII"),
+             duong_dung=stri_trans_general(duong_dung, id = "Latin-ASCII"),
+             benh=stri_trans_general(benh, id = "Latin-ASCII")) %>%
+      mutate(ten_thuoc=casefold(ten_thuoc, upper = FALSE),
+             benh=casefold(benh, upper = FALSE),
+             duong_dung=casefold(duong_dung, upper = FALSE))
+  toc()
+  # classify the drug 
+  tic()
+  print(paste("Merging drug and classification"))
+  classified_drug <- drug %>% 
+    mutate(ngay_yl=as.Date(ngay_yl,format="%Y-%m-%d"),
+           month_yr=format(ngay_yl, "%Y-%m")) %>%
+    left_join(.,ab, by=c("ten_thuoc","duong_dung"),multiple = NULL) %>%
+    select(crfid, ma_khoa,ten_khoa, ngay_yl,ham_luong,duong_dung,
+           month_yr,ten_thuoc, duong_dung, benh, ma_benh,atc_code,atc_level_name,
+           subgr_therapeutic_code, subgr_chemical_therapeutic_name,
+           ab_used,icd10,Chapter,Chapter_name,Category)
+  toc()
+  # print briefly the drug classification
+  print("result of drug classification")
+  print(head(classified_drug))
+  ### return the output 
+  return(classified_drug)
+})
+
+### DOT1000 calculation
+DOT_cal <- reactive({
+  ### require data to run
+  req(input$bed_upload)
+  req(input$drug_upload)
+  ### get the data
+  ### classifying the drug 
+  classified_drug <- classified_drug()
+  ### bed day calculation
+  bed_day <- bed_day()
+  ### calculate DOT1000
+  tic("merge with bed data")
+  # merge with ward day
+  classified_drug <- classified_drug %>%
+      filter(crfid %in% bed_day$crfid) %>%
+      left_join(bed_day, by=c("crfid", "month_yr", 
+                                 "ten_khoa")) %>%
+      distinct() %>%
+      filter(!is.na(bed_day))
+  # check the data after merge
+  print("check the data after merged with ward day")
+  print(head(classified_drug))
+  # calculate DOT1000 by antibiotic
+  DOT_assignw <- classified_drug %>% 
+      filter(ab_used == T) %>%
+      group_by(crfid, atc_level_name, month_yr, ten_khoa) %>%
+      dplyr::summarise(DOT_s=length(unique(ngay_yl)))%>% 
+      group_by(atc_level_name, month_yr,ten_khoa) %>%
+      dplyr:: summarise(DOT_ss=sum(DOT_s, na.rm = TRUE))
+  ### return the output 
+  return(DOT_assignw)
+})
+# create a function to get the unique combinations of crfid and ma_benh
+icd10_list <- reactive({
+  ### required data 
+  req(input$drug_upload)
+  ### get the dat 
+  classified_drug <- classified_drug()
+  ### create a new dataset contain the unique combination of crfid and icd10
+  list_crfid <- classified_drug %>% select(crfid,icd10,Chapter) %>% distinct()
+  ### return the output 
+  return(list_crfid)
+})
+
+```
+
+Row {data-width=500}
+-----------------------------------------------------------------------
+### Dữ liệu đã làm sạch - Hành Chính
+
+```{r}
+### output the table
+# create data table 
+output$tab_patient <- renderDT({
+
+  # get the data 
+  admin <- patient_dat()
+  # print the message 
+  print("get the data to show")
+  # the the top 10 entries of the data
+  DT::datatable(data = admin,
+            filter = 'top', extensions = c('Buttons', 'Scroller'),
+      options = list(scrollY = 650,
+                     scrollX = 500,
+                     deferRender = TRUE,
+                     scroller = TRUE,
+                     paging = TRUE,
+                     # pageLength = 25,
+                     buttons = list('excel',
+                                    list(extend = 'colvis', targets = 0, visible = FALSE)),
+                     dom = 'lBfrtip',
+                     fixedColumns = TRUE),
+      rownames = FALSE)
+})
+
+# output the data of patient
+DTOutput("tab_patient")
+```
+
+Row {data-width=500}
+-----------------------------------------------------------------------
+### Dữ liệu đã làm sạch - thuốc
+
+```{r}
+### Get a brief view of uploaded data 
+# read the data 
+output$tab_drug <- renderDT({
+  # get the data 
+  drug <- drug_dat()
+  # print the message 
+  print("get of the data to show")
+  # the the top 10 entries of the data
+  DT::datatable(data = drug,
+            filter = 'top', extensions = c('Buttons', 'Scroller'),
+      options = list(scrollY = 650,
+                     scrollX = 500,
+                     deferRender = TRUE,
+                     scroller = TRUE,
+                     paging = TRUE,
+                     # pageLength = 25,
+                     buttons = list('excel',
+                                    list(extend = 'colvis', targets = 0, visible = FALSE)),
+                     dom = 'lBfrtip',
+                     fixedColumns = TRUE), 
+      rownames = FALSE)
+})
+
+# output the data of patient
+DTOutput("tab_drug")
+```
+
+Row {data-width=500}
+-----------------------------------------------------------------------
+
+### Dữ liệu đã làm sạch - giường
+
+```{r}
+### Get a brief view of uploaded data 
+# read the data 
+output$tab_bed <- renderDT({
+  # get the data 
+  bed <- bed_dat()
+  # the the top 10 entries of the data
+  DT::datatable(data = bed,
+                filter = 'top', extensions = c('Buttons', 'Scroller'),
+                options = list(scrollY = 650,
+                               scrollX = 500,
+                               deferRender = TRUE,
+                               scroller = TRUE,
+                               paging = TRUE,
+                               # pageLength = 25,
+                               buttons = list('excel',
+                                              list(extend = 'colvis', targets = 0, visible = FALSE)),
+                               dom = 'lBfrtip',
+                               fixedColumns = TRUE), 
+                rownames = FALSE)
+  
+})
+# output the data of patient
+DTOutput("tab_bed")
+```
+
+
+DOT1000 theo tháng
+=======================================================================
+
+Row {data-width=500}
+-----------------------------------------------------------------------
+### Biểu đồ
+
+```{r}
+### calculate DOT and visualise the data  
+output$dot_plottly <- renderPlotly({
+  ### require data to run
+  req(input$bed_upload)
+  req(input$drug_upload)
+  ### get the data 
+  DOT_assignw <- DOT_cal()
+  bed_day <- bed_day()
+  # calculate the bed day monthly by wards
+  ward_day <- bed_day %>%
+      group_by(month_yr,ten_khoa) %>%
+      dplyr::summarise(ward_day_ss=sum(bed_day)) %>% ungroup()
+  # print the output 
+  print("result of ward day calculation")
+  print(head(ward_day))
+  # calculate DOT1000 by wards (combine all antibiotic)
+  tic("calculate DOT for all ward")
+  DOT_1000_all_anb <- DOT_assignw %>%
+      left_join(ward_day, by=c("ten_khoa", "month_yr")) %>%
+      distinct()  %>% 
+      filter(!(month_yr %in% c("2019-11", "2019-12"))) %>%
+      group_by(ten_khoa, month_yr) %>%
+      dplyr::summarise(DOT_sum=sum(DOT_ss),
+                       ward_day_ss=sum(ward_day_ss)) %>%
+      mutate(DOT_1000_sum=DOT_sum/ward_day_ss*1000) %>%
+      distinct()
+   toc()
+   # print out the DOT1000
+   print(head(DOT_1000_all_anb))
+   ### Visualise the data
+   # create date variable 
+   DOT_1000_all_anb <- DOT_1000_all_anb %>% mutate(date = parse_date_time(paste0(month_yr,"-15"),orders = "ymd")) %>% ungroup()
+   # plot the data 
+   plot_ly(data = DOT_1000_all_anb) %>% add_trace( x = ~date, y= ~DOT_1000_sum,color = ~ten_khoa, type = "scatter",mode = "lines+markers") %>% layout(
+      title = paste("DOT1000 theo tháng của bệnh viện",input$hospital),
+      xaxis = list(title = "tháng"),
+      yaxis = list(title = "DOT1000")
+                              )
+})
+
+plotlyOutput("dot_plottly")
+```
+
+
+Row {data-width=500}
+-----------------------------------------------------------------------
+### Số ngày giường theo tháng
+
+```{r}
+output$wardday_tab <- renderDT({
+  ### require data to run
+  req(input$bed_upload)
+  # get the data 
+  bed_day <- bed_day()
+  # calculate the bed day monthly by wards
+  ward_day <- bed_day %>%
+      group_by(month_yr,ten_khoa) %>%
+      dplyr::summarise(ward_day_ss=sum(bed_day)) %>% ungroup()
+  # print the message 
+  print("get of the data to show")
+  # the the top 10 entries of the data
+  DT::datatable(data = ward_day,
+            filter = 'top', extensions = c('Buttons', 'Scroller'),
+      options = list(scrollY = 650,
+                     scrollX = 500,
+                     deferRender = TRUE,
+                     scroller = TRUE,
+                     paging = TRUE,
+                     # pageLength = 25,
+                     buttons = list(list(extend = 'colvis', targets = 0, visible = FALSE)),
+                     dom = 'lBfrtip',
+                     fixedColumns = TRUE), 
+      rownames = FALSE)
+})
+
+# output the data of patient
+DTOutput("wardday_tab")
+
+```
+
+
+Row {data-width=500}
+-----------------------------------------------------------------------
+### DOT1000 
+
+```{r}
+output$dot_tab <- renderDT({
+  ### require data to run
+  req(input$drug_upload)
+  # get the data 
+  DOT_cal <- DOT_cal()
+  DOT_cal <- DOT_cal %>% group_by(atc_level_name) %>% summarise(DOT_total = sum(DOT_ss)) %>% ungroup()
+  # print the message 
+  print("get of the data to show")
+  # the the top 10 entries of the data
+  DT::datatable(data = DOT_cal,
+            filter = 'top', extensions = c('Buttons', 'Scroller'),
+      options = list(scrollY = 650,
+                     scrollX = 500,
+                     deferRender = TRUE,
+                     scroller = TRUE,
+                     paging = TRUE,
+                     # pageLength = 25,
+                     buttons = list(list(extend = 'colvis', targets = 0, visible = FALSE)),
+                     dom = 'lBfrtip',
+                     fixedColumns = TRUE), 
+      rownames = FALSE)
+})
+
+# output the data of patient
+DTOutput("dot_tab")
+```
+
+
+DOT1000 theo tháng của từng khoa
+=======================================================================
+
+
+```{r}
+# input IU
+selectInput("ward","Chọn khoa để phân tích", "")
+# update the input based on the uploaded bed data 
+observe({
+    updateSelectInput(session, "ward",
+                      label = "Ward",
+                      choices = unique(bed_dat()$ten_khoa),
+                      selected = unique(bed_dat()$ten_khoa)[1])
+  })
+```
+
+Row {data-width=500}
+-----------------------------------------------------------------------
+### Biểu đồ
+
+```{r}
+output$ward_dot_plot <- renderPlotly({
+  ### require data to run
+  req(input$bed_upload)
+  req(input$drug_upload)
+  ### get the data 
+  DOT_assignw <- DOT_cal()
+  bed_day <- bed_day()
+  ### process the data 
+  # filter the data based on the input ward
+  DOT_assignw <- DOT_assignw %>% filter(ten_khoa == input$ward)
+  # calculate the bed day monthly by wards
+  ward_day <- bed_day %>%
+      group_by(month_yr,ten_khoa) %>%
+      dplyr::summarise(ward_day_ss=sum(bed_day)) %>% ungroup()
+  # calculate DOT1000 by by antibiotic
+  DOT_1000_each_ab <- DOT_assignw %>%
+      left_join(ward_day, by=c("ten_khoa", "month_yr")) %>%
+      distinct()  %>% 
+      filter(!(month_yr %in% c("2019-11", "2019-12"))) %>%
+      group_by(atc_level_name, month_yr) %>%
+      summarise(DOT_sum=sum(DOT_ss),
+                       ward_day_ss=sum(ward_day_ss)) %>%
+      mutate(DOT_1000_sum=DOT_sum/ward_day_ss*1000) %>%
+      distinct()
+   ### Visualise the data
+   # create date variable 
+   DOT_1000_each_ab <- DOT_1000_each_ab %>% mutate(date = parse_date_time(paste0(month_yr,"-15"),orders = "ymd")) %>% ungroup()
+   # plot the data 
+   plot_ly(data = DOT_1000_each_ab) %>% add_trace( x = ~date, y= ~DOT_1000_sum,color = ~atc_level_name, type = "scatter",mode = "lines+markers") %>% layout(
+      title = paste("DOT1000 theo tháng của khoa",input$ward,"trong",input$hospital),
+      xaxis = list(title = "tháng"),
+      yaxis = list(title = "DOT1000")
+                              )
+  
+})
+# plotly output
+plotlyOutput("ward_dot_plot")
+```
+
+DOT1000 theo tháng với các mã ICD10
+=======================================================================
+
+```{r}
+fluidPage(
+  
+  headerPanel(h2("DOT1000 theo các chương của ICD10 hoặc có thể gõ một hay nhiều mã ICD10",align = "center"))
+  
+  , fluidRow(column(12,
+    
+    selectizeInput(
+      "icd10"
+      , "Gõ một hay nhiều mã ICD10"
+      , choices = NULL
+      , multiple = TRUE
+      , options = list(create = TRUE)
+    )
+  )
+  )
+)
+```
+
+
+Row {data-width=500}
+-----------------------------------------------------------------------
+### Biểu đồ DOT1000 theo chương ICD10
+
+```{r}
+output$icd_dot <- renderPlotly({
+  ### require data to run
+  req(input$bed_upload)
+  req(input$drug_upload)
+  ### get the data 
+  classified_drug <- classified_drug()
+  bed_day <- bed_day()
+  icd10_list <- icd10_list()
+  ### processing the data 
+  tic("merge with bed data")
+  # merge with ward day
+  classified_drug <- classified_drug %>%
+      filter(crfid %in% bed_day$crfid) %>%
+      left_join(bed_day, by=c("crfid", "month_yr", 
+                                 "ten_khoa")) %>%
+      distinct() %>%
+      filter(!is.na(bed_day))
+  # check the data after merge
+  print("check the data after merged with ward day")
+  print(head(classified_drug))
+  # calculate DOT1000 by ICD10 chapter
+  DOT_assignw <- classified_drug %>% 
+      filter(ab_used == T) %>%
+      group_by(crfid,Chapter, month_yr) %>%
+      dplyr::summarise(DOT_s=length(unique(ngay_yl)),na.remove = T)
+  # calculate the bed day monthly by wards
+  icd10_day <- bed_day %>% left_join(.,icd10_list, by = c("crfid")) %>% 
+      group_by(month_yr,Chapter) %>%
+      dplyr::summarise(ward_day_ss=sum(bed_day)) %>% ungroup()
+  # print the output 
+  print("result of icd10 day calculation")
+  print(head(icd10_day))
+  # calculate DOT1000 by wards (combine all antibiotic)
+  tic("calculate DOT for all ward")
+  DOT_1000_chapter <- DOT_assignw %>%
+      left_join(icd10_day, by=c("Chapter", "month_yr")) %>%
+      distinct()  %>% 
+      filter(!(month_yr %in% c("2019-11", "2019-12"))) %>%
+      group_by(Chapter, month_yr) %>%
+      dplyr::summarise(DOT_sum=sum(DOT_s),
+                       ward_day_ss=sum(ward_day_ss)) %>%
+      mutate(DOT_1000_sum=DOT_sum/ward_day_ss*1000) %>%
+      distinct()
+   toc()
+   ### Visualise the data
+   # create date variable 
+   DOT_1000_chapter <- DOT_1000_chapter %>% mutate(date = parse_date_time(paste0(month_yr,"-15"),orders = "ymd")) %>% ungroup()
+   # create colour palette 
+   col_pal <- createPalette(24, c("#FF0000", "#00FF00", "#0000FF"), range = c(30, 80)) %>% as.vector()
+   # set name for the colour palette 
+   col_pal <- setNames(col_pal,unique(DOT_1000_chapter$Chapter))
+   # plot the data 
+   plot_ly(data = DOT_1000_chapter) %>% add_trace( x = ~date, y= ~DOT_1000_sum,color = ~Chapter, type = "bar", colors = col_pal) %>% layout(
+      title = paste("DOT1000 theo tháng cho",input$hospital,"theo chương ICD10"),
+      xaxis = list(title = "tháng"),
+      yaxis = list(title = "DOT1000"),
+      barmode = "stack"
+                              ) 
+  
+  
+  
+})
+
+### Output plotly
+plotlyOutput("icd_dot")
+```
+
+### Danh mục ICD10 
+
+```{r}
+### create a table for ICD10 chapter reference
+output$icd_ref <- renderDT({
+  ### get the data
+  ICD10_ref <- readRDS("Data/ICD10_ref_db_2021_06_24.rds")
+  ### show the data
+  DT::datatable(data = ICD10_ref,
+            filter = 'top', extensions = c('Buttons', 'Scroller'),
+      options = list(scrollY = 650,
+                     scrollX = 500,
+                     deferRender = TRUE,
+                     scroller = TRUE,
+                     paging = TRUE,
+                     # pageLength = 25,
+                     buttons = list(list(extend = 'colvis', targets = 0, visible = FALSE)),
+                     dom = 'lBfrtip',
+                     fixedColumns = TRUE), 
+      rownames = FALSE)
+})
+# output the table
+DTOutput("icd_ref")
+```
+
+Row {data-width=500}
+-----------------------------------------------------------------------
+### DOT1000 theo các mã ICD10 đã chọn
+
+
+```{r}
+output$byicd_dot <- renderPlotly({
+  ### require input to run 
+  req(input$icd10)
+  req(input$bed_upload)
+  req(input$drug_upload)
+  ### get the data 
+  classified_drug <- classified_drug()
+  bed_day <- bed_day()
+  icd10_list <- icd10_list()
+  ### process the data 
+  # print the input 
+  print(input$icd10)
+  tic("merge with bed data")
+  # merge with ward day
+  classified_drug <- classified_drug %>%
+      filter(crfid %in% bed_day$crfid) %>%
+      left_join(bed_day, by=c("crfid", "month_yr", 
+                                 "ten_khoa")) %>%
+      distinct() %>%
+      filter(!is.na(bed_day))
+  # check the data after merge
+  # print("check the data after merged with ward day")
+  # print(head(classified_drug))
+  # filter the data by selected icd10 then calculate DOT1000 by ICD10 chapter
+  DOT_assignw <- classified_drug %>% 
+      filter(ab_used == T) %>% filter(icd10 %in% input$icd10) %>% 
+      group_by(crfid,icd10, month_yr) %>%
+      dplyr::summarise(DOT_s=length(unique(ngay_yl)),na.remove = T)
+  print(head(DOT_assignw))
+  # print the result after filter
+  print(paste("Có",nrow(DOT_assignw), "bệnh nhân có mã ICD10"))
+  # logical condition
+   observeEvent(input$icd10,{
+     if(nrow(DOT_assignw) == 0){
+      showNotification("Không có bệnh nhân nào có mã ICD10")
+     }
+    })
+
+  # calculate the bed day monthly by selected icd10
+  icd10_day <- bed_day %>% left_join(.,icd10_list, by = c("crfid")) %>% filter(icd10 %in% input$icd10) %>% 
+      group_by(month_yr,icd10) %>%
+      dplyr::summarise(ward_day_ss=sum(bed_day)) %>% ungroup()
+  # print the output 
+  print("result of icd10 day calculation")
+  print(head(icd10_day))
+  # calculate DOT1000 by wards (combine all antibiotic)
+  tic("calculate DOT for all ward")
+  DOT_1000_icd10 <- DOT_assignw %>%
+      left_join(icd10_day, by=c("icd10", "month_yr")) %>%
+      distinct()  %>% 
+      filter(!(month_yr %in% c("2019-11", "2019-12"))) %>%
+      group_by(icd10, month_yr) %>%
+      dplyr::summarise(DOT_sum=sum(DOT_s),
+                       ward_day_ss=sum(ward_day_ss)) %>%
+      mutate(DOT_1000_sum=DOT_sum/ward_day_ss*1000) %>%
+      distinct()
+   toc()
+   ### Visualise the data
+   # create date variable 
+   DOT_1000_icd10 <- DOT_1000_icd10 %>% mutate(date = parse_date_time(paste0(month_yr,"-15"),orders = "ymd")) %>% ungroup()
+   # plot the data 
+   plot_ly(data = DOT_1000_icd10) %>% add_trace( x = ~date, y= ~DOT_1000_sum,color = ~icd10, type = "bar") %>% layout(
+      title = paste("DOT1000 theo tháng trong ",input$hospital,"với mã ICD10 đã chọn"),
+      xaxis = list(title = "tháng"),
+      yaxis = list(title = "DOT1000"),
+      barmode = "stack"
+   )
+})
+
+#output plotly
+plotlyOutput("byicd_dot")
+
+```
+
+
+DOT1000 theo tháng với nhóm kháng sinh AWaRe
+=======================================================================
+
+
+Row {data-width=500}
+-----------------------------------------------------------------------
+### DOT1000 theo nhóm kháng sinh AWaRe
+
+```{r}
+output$aware_dot <- renderPlotly({
+  ### require input to run
+  req(input$bed_upload)
+  req(input$drug_upload)
+  ### get data
+  classified_drug <- classified_drug()
+  bed_day <- bed_day()
+  ### process the data
+  ### processing the data 
+  tic("merge with bed data")
+  # merge with ward day
+  classified_drug <- classified_drug %>%
+      filter(crfid %in% bed_day$crfid) %>%
+      left_join(bed_day, by=c("crfid", "month_yr", 
+                                 "ten_khoa")) %>%
+      distinct() %>%
+      filter(!is.na(bed_day))
+  # check the data after merge
+  print("check the data after merged with ward day")
+  print(head(classified_drug))
+  # calculate DOT1000 by ICD10 chapter
+  DOT_assignw <- classified_drug %>% 
+      filter(ab_used == T) %>%
+      group_by(crfid,Category, month_yr) %>%
+      dplyr::summarise(DOT_s=length(unique(ngay_yl)),na.remove = T)
+  # calculate the bed day monthly by wards
+  bed_day <- bed_day %>%
+      group_by(month_yr) %>%
+      dplyr::summarise(ward_day_ss=sum(bed_day)) %>% ungroup()
+  # print the output
+  # print("result of icd10 day calculation")
+  # print(head(aware_day))
+  # calculate DOT1000 by wards (combine all antibiotic)
+  tic("calculate AWaRe DOT for all ward")
+  DOT_1000_aware <- DOT_assignw %>%
+      left_join(bed_day, by=c("month_yr")) %>%
+      distinct()  %>% 
+      filter(!(month_yr %in% c("2019-11", "2019-12"))) %>%
+      group_by(Category, month_yr) %>%
+      dplyr::summarise(DOT_sum=sum(DOT_s),
+                       ward_day_ss=ward_day_ss) %>%
+      mutate(DOT_1000_sum=DOT_sum/ward_day_ss*1000) %>%
+      distinct() %>% mutate(Category = replace_na(Category,"Not Listed on AWaRe"))
+   toc()
+   # print the output 
+   print(head(DOT_1000_aware))
+   ### Visualise the data
+   # create colour palette for the plot
+   col_pal <- c("#ca0020","#f4a582","#bababa","#404040","#edf8b1")
+   setNames(col_pal,c("Access","Watch","Reserve","Not Recommended","Not Listed on AWaRe"))
+   # create date variable 
+   DOT_1000_aware <- DOT_1000_aware %>% mutate(date = parse_date_time(paste0(month_yr,"-15"),orders = "ymd")) %>% ungroup()
+   # plot the data 
+   plot_ly(data = DOT_1000_aware) %>% add_trace( x = ~date, y= ~DOT_1000_sum,color = ~Category, type = "bar", colors = col_pal) %>% layout(
+      title = paste("DOT1000 theo tháng",input$hospital,"theo nhóm kháng sinh AWaRe"),
+      xaxis = list(title = "Time (Month)"),
+      yaxis = list(title = "DOT1000"),
+      barmode = "stack"
+   )
+
+})
+# output plotly
+plotlyOutput("aware_dot")
+```
+
+
+Row {data-width=500}
+-----------------------------------------------------------------------
+### Danh mục nhóm kháng sinh AWaRE 
+
+```{r}
+output$aware_ref <- renderDT({
+  ### read the data 
+  aware_ref <- readRDS("Data/aware_druglist_2022-11-10.rds")
+  ### show the data
+  DT::datatable(data = aware_ref,
+            filter = 'top', extensions = c('Buttons', 'Scroller'),
+      options = list(scrollY = 650,
+                     scrollX = 500,
+                     deferRender = TRUE,
+                     scroller = TRUE,
+                     paging = TRUE,
+                     # pageLength = 25,
+                     buttons = list(list(extend = 'colvis', targets = 0, visible = FALSE)),
+                     dom = 'lBfrtip',
+                     fixedColumns = TRUE), 
+      rownames = FALSE)
+})
+# output the table
+DTOutput("aware_ref", height = 500)
+```
+
