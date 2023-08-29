@@ -39,6 +39,8 @@ source("Scripts/multiple_read.R")
 source("Scripts/clean_data.R")
 # function to calculate the bed day 
 source("Scripts/monthly_bedday_v2.R")
+# function to transform the bed data of Nghia Hung 
+source("Scripts/NH_bed.R")
 ### reactive functions 
 # multuple reading files
 # reactive upload patient data 
@@ -143,12 +145,18 @@ drug_dat <- reactive({
 bed_dat <- reactive({
    # required data to run
   req(input$bed_upload)
+  req(input$hospital)
   # counting the time to upload  
   tic()
   # print the message 
   print("begin to upload the bed data")
   # get the data 
   bed <- react_upload_bed() %>% as.data.frame()
+  # if hospital == Nghia Hung, start calculate the bed day
+  if(input$hospital == "Nghia Hung hospital"){
+    print("Nghia Hung hospital choosen, start clean the data")
+    bed <- create_bed_NH(bed)
+  }
   # stop time counting
   toc()
   ### cleaning the data 
