@@ -1,14 +1,17 @@
 # this script is used to read multiple file with different kind of extension 
 # written and maintained by Tung Trinh
 # Jan 3rd 2023
-# version 1.0
+# modified by Tung Trinh
+# Aug 20th 2023
+# version 2.0
 # for more information, please contact to tungts@oucru.org
 ##########################################################################################################
 multiple_read <- function(input){
-  ### required packages ###
+  ### required packages  and built-in function###
   require(readxl)
   require(data.table)
   require(tools)
+  source("Scripts/smooth_excel.R")
   ### load data with different extension ###
   # create an empty list 
   list_dat <- list()
@@ -39,7 +42,7 @@ multiple_read <- function(input){
       #ind_start <- tmp %>% pull(1) %>% grep("stt","STT",.)
       #colnames(tmp) <- tmp[ind_start,]
       #list_dat[[i]] <- tmp %>% slice(-(1:ind_start))
-      list_dat[[i]]<- read_excel(path = file) %>% dplyr::mutate_all(as.character)
+      list_dat[[i]] <- smooth_excel(path = file) %>% dplyr::mutate_all(as.character)
     }
     # accumulate the indicator 
     i = i + 1
